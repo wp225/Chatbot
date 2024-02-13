@@ -5,13 +5,7 @@ import random
 conn = sqlite3.connect('orders.db')
 cursor = conn.cursor()
 
-# Delete existing data
-cursor.execute('DELETE FROM products')
-cursor.execute('DELETE FROM orders')
-cursor.execute('DELETE FROM order_products')
 
-# Commit the deletion changes
-conn.commit()
 
 
 cursor.execute('''

@@ -20,8 +20,9 @@ cursor.execute('''
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS orders (
         order_number INTEGER PRIMARY KEY,
-        order_date TEXT DEFAULT CURRENT_TIMESTAMP,
-        phone TEXT,
+        order_date TEXT ,
+        order_time TEXT,
+        phone_number TEXT,
         status TEXT
     )
 ''')
