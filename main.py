@@ -29,39 +29,41 @@ context_size = None
 context_quantity = None
 context_phone = None
 context_contact = None
+context_id = None
 
 
 # DONE
+def get_order_details(order_id):
+    try:
+        # Connect to the database
+        conn = sqlite3.connect('orders.db')
+        cursor = conn.cursor()
+
+        # Query order details and associated products
+        cursor.execute('''
+            SELECT o.order_number, o.order_date, p.product_id, o.phone_number, o.status,
+                   op.quantity, p.type, p.stock, p.price, op.size, op.color
+            FROM orders o
+            JOIN order_products op ON o.order_number = op.order_number
+            JOIN products p ON op.product_id = p.product_id
+            WHERE o.order_number = ?
+        ''', (int(order_id),))
+
+        # Fetch the result
+        result = cursor.fetchall()
+
+        # Close the connection
+        conn.close()
+
+        return result
+
+    except sqlite3.Error as e:
+        # Handle database-related errors
+        print(f"Error retrieving order details: {str(e)}")
+        return None
+
+
 async def handle_order_track(intent_name, parameters):
-    def get_order_details(order_id):
-        try:
-            # Connect to the database
-            conn = sqlite3.connect('orders.db')
-            cursor = conn.cursor()
-
-            # Query order details and associated products
-            cursor.execute('''
-                SELECT o.order_number, o.order_date, o.order_time, o.phone_number, o.status,
-                       op.quantity, p.type, p.stock, p.price, op.size, op.color
-                FROM orders o
-                JOIN order_products op ON o.order_number = op.order_number
-                JOIN products p ON op.product_id = p.product_id
-                WHERE o.order_number = ?
-            ''', (int(order_id),))
-
-            # Fetch the result
-            result = cursor.fetchall()
-
-            # Close the connection
-            conn.close()
-
-            return result
-
-        except sqlite3.Error as e:
-            # Handle database-related errors
-            print(f"Error retrieving order details: {str(e)}")
-            return None
-
     try:
         order_id = parameters.get('number')
         logger.info(f"Received Intent: {intent_name}")
@@ -396,6 +398,96 @@ async def handle_retrieve_cust_info(intent_name, parameters):
         raise HTTPException(status_code=500, detail="Internal Server Error")  # ##
 
 
+async def change_order(intent_name, parameters):
+    try:
+        order_id = parameters.get('number')
+        logger.info(f"Received Intent: {intent_name}")
+        logger.info(f"Received Parameters: {parameters}")
+        logger.info(f"Order ID: {order_id}")
+
+        if not order_id:
+            raise ValueError("Order ID not provided")
+
+        # Retrieve order details from the database
+        order_details = get_order_details(int(order_id))
+
+        if not order_details:
+            raise ValueError(f"Order with ID {order_id} not found")
+        context_id = order_id
+
+        # Construct the fulfillment message with product information
+        elements = [
+            {
+                "title": f"Order ID {int(order_id)} : {order_details[0][4]}",
+                # Index 4 corresponds to the status in the tuple
+                "subtitle": f"{order_details[0][1]}",
+            }
+        ]
+
+        for product in order_details:
+            elements.append({
+                "title": f"{product[6]} - Quantity: {product[5]}",  # Adjust indices based on your tuple structure
+                "subtitle": f"Price: {product[8]}, Size: {product[-1]}, Colors: {product[-2]}",
+            })
+
+        for product in order_details:
+            logger.info(product[2])
+            prod = product[2]
+
+        fulfillment_message = {
+            "fulfillmentMessages": [
+                {
+                    "payload": {
+                        "facebook": {
+                            "attachment": {
+                                "type": "template",
+                                "payload": {
+                                    "template_type": "generic",
+                                    "elements": elements
+                                }
+                            }
+                        }
+                    },
+                    "platform": "FACEBOOK"
+                },
+                {
+                    "quickReplies": {
+                        "title": "What would you like to do ?",
+                        "quickReplies": [
+                            f"Delete Order:{order_id}",
+                            f"Change Details:{prod}",
+                            "Change Phone Number"
+                        ]
+                    },
+                    "platform": "FACEBOOK"
+                }
+            ]
+        }
+
+        # Log the response
+        logger.info(f"Generated Response: {fulfillment_message}")
+
+        # Return fulfillment message
+        return JSONResponse(content=fulfillment_message)
+
+    except ValueError as ve:
+        # Handle specific data errors
+        logger.error(f"ValueError in handle_order_track: {str(ve)}", exc_info=True)
+        raise HTTPException(status_code=404, detail=f"Order not found: {str(ve)}")
+
+    except sqlite3.Error as e:
+        # Handle database-related errors
+        logger.error(f"Error in handle_order_track: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    except Exception as e:
+        # Log the unexpected exception
+        logger.error(f"Unexpected error in handle_order_track: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+async def delete_order(intent_name, parameters):
+    pass
 @app.post("/")
 async def handle_request(request: Request, payload: Payload):
     '''
@@ -425,7 +517,10 @@ async def handle_request(request: Request, payload: Payload):
             return await handle_retrieve_cust_info(intent_name, parameters)
         elif intent_name == "order.add_item":
             return await add_items(intent_name, parameters)
-
+        elif intent_name == "order.change - custom":
+            return await change_order(intent_name, parameters)
+        elif intent_name == "order.change - custom - delete":
+            return await delete_order(intent_name, parameters)
 
         else:
             return JSONResponse(content={"fulfillmentText": "Unhandled intent"})
