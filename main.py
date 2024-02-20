@@ -487,7 +487,43 @@ async def change_order(intent_name, parameters):
 
 
 async def delete_order(intent_name, parameters):
-    pass
+    order_id = parameters.get('number')
+
+    try:
+        # Create a connection to the SQLite database
+        conn = sqlite3.connect('orders.db')
+        cursor = conn.cursor()
+
+        # Begin a transaction
+        conn.execute('BEGIN TRANSACTION')
+
+        # Execute the SQL query to delete the order from 'orders' table
+        cursor.execute("DELETE FROM orders WHERE order_number = ?", (order_id,))
+
+        # Execute the SQL query to delete associated products from 'order_products' table
+        cursor.execute("DELETE FROM order_products WHERE order_number = ?", (order_id,))
+
+        # Commit the transaction
+        conn.commit()
+        cursor.close()
+
+        # Prepare the fulfillment message
+        fulfillment_message = {
+            "fulfillmentMessages": [
+                {
+                    "text": {
+                        "text": [f"Order {order_id} and its associated products have been deleted."]
+                    }
+                }
+            ]
+        }
+
+        return JSONResponse(content=fulfillment_message)
+
+    except Exception as e:
+        # Log the exception or handle it as needed
+        return JSONResponse(content={"error": str(e)})
+
 @app.post("/")
 async def handle_request(request: Request, payload: Payload):
     '''
