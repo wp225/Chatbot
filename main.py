@@ -1,6 +1,7 @@
 import datetime
 import logging
 import sqlite3
+import mysql.connector
 
 from fastapi import FastAPI, Request
 from fastapi import HTTPException
@@ -30,31 +31,36 @@ context_quantity = None
 context_phone = None
 context_contact = None
 context_id = None
+import mysql.connector
+
+global cnx
+
+
+def connect_to_db():
+    global cnx
+    cnx = mysql.connector.connect(
+        host='127.0.0.1',
+        user='root',
+        password='BIZZBOT123',
+        database='Enterprise_Database'
+    )
+    return cnx, cnx.cursor()
 
 
 # DONE
-def get_order_details(order_id):
+def get_order_details(order_id, cursor):
     try:
-        # Connect to the database
-        conn = sqlite3.connect('orders.db')
-        cursor = conn.cursor()
 
-        # Query order details and associated products
         cursor.execute('''
             SELECT o.order_number, o.order_date, p.product_id, o.phone_number, o.status,
                    op.quantity, p.type, p.stock, p.price, op.size, op.color
             FROM orders o
             JOIN order_products op ON o.order_number = op.order_number
             JOIN products p ON op.product_id = p.product_id
-            WHERE o.order_number = ?
-        ''', (int(order_id),))
+            WHERE o.order_number = %(order_id)s
+        ''', {'order_id': int(order_id)})
 
-        # Fetch the result
         result = cursor.fetchall()
-
-        # Close the connection
-        conn.close()
-
         return result
 
     except sqlite3.Error as e:
@@ -63,7 +69,7 @@ def get_order_details(order_id):
         return None
 
 
-async def handle_order_track(intent_name, parameters):
+async def handle_order_track(intent_name, parameters, cursor):
     try:
         order_id = parameters.get('number')
         logger.info(f"Received Intent: {intent_name}")
@@ -74,16 +80,15 @@ async def handle_order_track(intent_name, parameters):
             raise ValueError("Order ID not provided")
 
         # Retrieve order details from the database
-        order_details = get_order_details(int(order_id))
+        order_details = get_order_details(int(order_id), cursor)
+        # logger.info(order_details)
 
         if not order_details:
             raise ValueError(f"Order with ID {order_id} not found")
 
-        # Construct the fulfillment message with product information
         elements = [
             {
                 "title": f"Order ID {int(order_id)} : {order_details[0][4]}",
-                # Index 4 corresponds to the status in the tuple
                 "subtitle": f"{order_details[0][1]}",
             }
         ]
@@ -135,7 +140,7 @@ async def handle_order_track(intent_name, parameters):
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-async def handle_retrieve_prod_info(intent_name, parameters):
+async def handle_retrieve_prod_info(intent_name, parameters, cursor):
     global context_prod
 
     try:
@@ -148,18 +153,12 @@ async def handle_retrieve_prod_info(intent_name, parameters):
         if not prod_id:
             raise ValueError("Product ID not provided")
 
-        # Connect to the SQLite database asynchronously
-
-        conn = sqlite3.connect('orders.db')
-        cursor = conn.cursor()
-
         # Existing code
-        cursor.execute("SELECT * FROM products WHERE product_id = ?", (prod_id,))
+        cursor.execute("SELECT * FROM products WHERE product_id = %s", (prod_id,))
         product_info = cursor.fetchone()
 
         # Modify this part
         if not product_info:
-            # If product with given prod_id not found
             fulfillment_message = {
                 "fulfillmentMessages": [
                     {
@@ -307,7 +306,7 @@ async def add_items(intent_name, parameters):
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-async def handle_retrieve_cust_info(intent_name, parameters):
+async def handle_retrieve_cust_info(intent_name, parameters, cursor):
     '''
     :param intent_name: intent name
     :param parameters: phone_number
@@ -320,43 +319,51 @@ async def handle_retrieve_cust_info(intent_name, parameters):
     global context_quantity
     global context_prod
 
-    DATABASE_PATH = 'orders.db'  # Update with the correct path to your database file
 
     # NO need to send global variables
     async def insert_order(order_id, phone, status, context_product, context_quantity, context_color,
-                           context_size):
+                           context_size, cursor):
         try:
-            # Connect to the database
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
+
 
             # Insert the order information into the 'orders' table
             cursor.execute('''
                 INSERT INTO orders (order_number, order_date, order_time, phone_number, status)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (order_id, datetime.datetime.now().date(), datetime.datetime.now().strftime('%H:%M'), phone, status))
+                VALUES (%(order_id)s, %(order_date)s, %(order_time)s, %(phone)s, %(status)s)
+            ''', {
+                'order_id': order_id,
+                'order_date': datetime.datetime.now().date(),
+                'order_time': datetime.datetime.now().strftime('%H:%M'),
+                'phone': phone,
+                'status': status
+            })
 
             cursor.execute('''
-                            INSERT INTO order_products (order_number, product_id, quantity, color, size)
-                            VALUES (?, ?, ?, ?, ?)
-                        ''', (order_id, context_product, context_quantity, context_color, context_size))
+                INSERT INTO order_products (order_number, product_id, quantity, color, size)
+                VALUES (%(order_id)s, %(context_product)s, %(context_quantity)s, %(context_color)s, %(context_size)s)
+            ''', {
+                'order_id': order_id,
+                'context_product': context_product,
+                'context_quantity': context_quantity,
+                'context_color': context_color,
+                'context_size': context_size
+            })
 
             cursor.execute('''
-                        UPDATE products
-                        SET stock = stock - ?
-                        WHERE product_id = ?
-                    ''', (context_quantity, context_product))
+                UPDATE products
+                SET stock = stock - %(context_quantity)s
+                WHERE product_id = %(context_product)s
+            ''', {
+                'context_quantity': context_quantity,
+                'context_product': context_product
+            })
 
-            # Commit the changes and close the connection
-            conn.commit()
-            conn.close()
 
         except Exception as e:
             # Handle database-related errors
             logger.error(f"Error inserting order into database: {str(e)}")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    # Modify your existing code to call the insert_order method after generating the order_id
     try:
         # Extract relevant information from the parameters
         context_phone = parameters.get('phone-number')
@@ -371,7 +378,7 @@ async def handle_retrieve_cust_info(intent_name, parameters):
 
         # Insert order into the 'orders' table
         await insert_order(order_id, context_phone, "Initiated", context_prod, context_quantity, context_color,
-                           context_size)
+                           context_size, cursor)
 
         fulfillment_message = {
             "fulfillmentMessages": [
@@ -398,7 +405,7 @@ async def handle_retrieve_cust_info(intent_name, parameters):
         raise HTTPException(status_code=500, detail="Internal Server Error")  # ##
 
 
-async def change_order(intent_name, parameters):
+async def change_order(intent_name, parameters, cursor):
     try:
         order_id = parameters.get('number')
         logger.info(f"Received Intent: {intent_name}")
@@ -408,8 +415,7 @@ async def change_order(intent_name, parameters):
         if not order_id:
             raise ValueError("Order ID not provided")
 
-        # Retrieve order details from the database
-        order_details = get_order_details(int(order_id))
+        order_details = get_order_details(int(order_id), cursor)
 
         if not order_details:
             raise ValueError(f"Order with ID {order_id} not found")
@@ -454,8 +460,8 @@ async def change_order(intent_name, parameters):
                     "quickReplies": {
                         "title": "What would you like to do ?",
                         "quickReplies": [
-                            f"Delete Order:{order_id}",
-                            f"Change Details:{prod}",
+                            f"Delete Order: {int(order_id)}",
+                            f"Change Details: {int(prod)}",
                             "Change Phone Number"
                         ]
                     },
@@ -486,26 +492,19 @@ async def change_order(intent_name, parameters):
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-async def delete_order(intent_name, parameters):
+async def delete_order(intent_name, parameters, cursor):
     order_id = parameters.get('number')
 
     try:
         # Create a connection to the SQLite database
-        conn = sqlite3.connect('orders.db')
-        cursor = conn.cursor()
-
-        # Begin a transaction
-        conn.execute('BEGIN TRANSACTION')
-
-        # Execute the SQL query to delete the order from 'orders' table
-        cursor.execute("DELETE FROM orders WHERE order_number = ?", (order_id,))
 
         # Execute the SQL query to delete associated products from 'order_products' table
-        cursor.execute("DELETE FROM order_products WHERE order_number = ?", (order_id,))
+        cursor.execute("DELETE FROM order_products WHERE order_number = %s", (int(order_id),))
+
+        # Execute the SQL query to delete the order from 'orders' table
+        cursor.execute("DELETE FROM orders WHERE order_number = %s", (int(order_id),))
 
         # Commit the transaction
-        conn.commit()
-        cursor.close()
 
         # Prepare the fulfillment message
         fulfillment_message = {
@@ -524,6 +523,7 @@ async def delete_order(intent_name, parameters):
         # Log the exception or handle it as needed
         return JSONResponse(content={"error": str(e)})
 
+
 @app.post("/")
 async def handle_request(request: Request, payload: Payload):
     '''
@@ -532,7 +532,9 @@ async def handle_request(request: Request, payload: Payload):
     :return: runs function based on intent
     '''
 
+    global cnx
     try:
+        cnx, cursor = connect_to_db()
         # Extract the necessary information from the payload
         intent_name = payload.queryResult.intent.get("displayName")
         parameters = payload.queryResult.parameters
@@ -543,20 +545,20 @@ async def handle_request(request: Request, payload: Payload):
 
         # Handle specific intent
         if intent_name == "order.track - order_id":
-            return await handle_order_track(intent_name, parameters)
+            return await handle_order_track(intent_name, parameters, cursor)
         elif intent_name == "product.retrive_info":
-            return await handle_retrieve_prod_info(intent_name, parameters)
+            return await handle_retrieve_prod_info(intent_name, parameters, cursor)
         elif intent_name == "order.conformation":
             return await handle_order_query_retrieve_prod_info_yes(intent_name, parameters)
         elif intent_name == "order.retrive_cust_info":
             logger.info(payload)
-            return await handle_retrieve_cust_info(intent_name, parameters)
+            return await handle_retrieve_cust_info(intent_name, parameters, cursor)
         elif intent_name == "order.add_item":
             return await add_items(intent_name, parameters)
         elif intent_name == "order.change - custom":
-            return await change_order(intent_name, parameters)
+            return await change_order(intent_name, parameters, cursor)
         elif intent_name == "order.change - custom - delete":
-            return await delete_order(intent_name, parameters)
+            return await delete_order(intent_name, parameters, cursor)
 
         else:
             return JSONResponse(content={"fulfillmentText": "Unhandled intent"})
@@ -573,3 +575,9 @@ async def handle_request(request: Request, payload: Payload):
         # Log the unexpected exception
         logger.error(f"Unexpected error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    finally:
+        # Close the database connection in the 'finally' block to ensure it happens regardless of success or failure
+        if cnx:
+            cnx.commit()
+            cnx.close()
